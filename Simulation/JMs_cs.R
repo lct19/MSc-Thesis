@@ -1,0 +1,199 @@
+source('simu_data_cs.R')
+
+##########################
+### JMs: current slope ###
+##########################
+
+library(INLA)
+library(splines) # splines to fit non-linear relationship
+
+####################################
+### convert surv set for poisson ###
+####################################
+
+y.surv <- inla.surv(time=SurvDat$endpt, event=SurvDat$event) # surv response
+
+basehaz.prior <- list(model='rw1', diagonal=1e-2, # prior of baseline hazard
+                      constr=FALSE, # random walk to fit basehaz
+                      n.intervals=15, # num of intervals for each patient
+                      scale.model=TRUE,
+                      hyper=list(prec=list(prior='pc.prec',
+                                           param=c(0.5,0.01),
+                                           initial=3)))
+
+Surv.info = inla.coxph(y.surv ~ -1 + trt + time.s, # expand surv dataset
+                       data=list(y.surv=y.surv, 
+                                 trt=SurvDat$trt,
+                                 time=SurvDat$endpt, # prepared for biomarker
+                                 baseEffect=SurvDat$baseEffect,
+                                 id=SurvDat$id, 
+                                 time.s=SurvDat$endpt,
+                                 time.e=SurvDat$endpt),
+                       control.hazard=basehaz.prior)
+
+SurvNew <- Surv.info$data # save expended surv data
+
+# start point of each time interval
+SurvNew$time.s <- SurvNew$baseline.hazard.time
+# end point of each time interval
+SurvNew$time.e <- SurvNew$baseline.hazard.time+SurvNew$baseline.hazard.length
+
+SurvNew$pt.id <- 1:nrow(SurvNew) # unique id for each patient at each time
+
+##########################################
+### construct new data set for JM INLA ###
+##########################################
+
+n.l <- nrow(LongDat) # Number of observations in Longi dataset
+n.s <- nrow(SurvNew) # Number of observations in expanded surv dataset
+NAs.l <- rep(NA, n.l) # create NAs vector
+NAs.s <- rep(NA, n.s)
+Ones.l <- rep(1, n.l) # create ones vector
+Ones.s <- rep(1, n.s)
+Zeros.s <- rep(0, n.s) # create zeros vector
+
+Y.joint <- list(
+  # Longi, pseudo start, pseudo end, Surv
+  c(LongDat$Y, NAs.s, NAs.s, NAs.s),
+  c(NAs.l, Zeros.s, NAs.s, NAs.s),
+  c(NAs.l, NAs.s, Zeros.s, NAs.s),
+  c(NAs.l, NAs.s, NAs.s, SurvNew$y..coxph)
+)
+
+covariate.s <- data.frame(
+  # covariates only show in Survival part
+  intercept.s = c(NAs.l, NAs.s, NAs.s, Ones.s), # intercept is necessary
+  trt = c(NAs.l, NAs.s, NAs.s, SurvNew$trt),
+  
+  # start point for each intervals
+  basehaz = c(NAs.l, NAs.s, NAs.s, SurvNew$baseline.hazard), # fit basehaz
+  # unique id for each patient at start of each time interval
+  cv.start = c(NAs.l, NAs.s, NAs.s, SurvNew$pt.id),
+  # unique id for each patient at start of each time interval
+  cv.end = c(NAs.l, NAs.s, NAs.s, SurvNew$pt.id)
+)
+
+# unique id for each patients (same id, same coefficient)
+unique.id <- unique(SurvDat$id)
+n.patients <- length(unique.id) # number of patients
+
+# Longitudinal
+idx.inte <- match(LongDat$id, unique.id) # 1 : N (iid2d in INLA)
+idx.slope <- idx.inte + n.patients # N+1 : 2N 
+# Survival (same rules as Longi to copy coefficient for each patient)
+idx.inte.c <- match(SurvNew$id, unique.id)
+idx.slope.c <- idx.inte.c + n.patients
+
+# Longitudinal part and copied terms
+covariate.l <- data.frame(
+  # Longitudinal part
+  intercept.l = c(Ones.l, Ones.s, Ones.s, NAs.s),
+  time = c(LongDat$time, SurvNew$time.s, SurvNew$time.e, NAs.s),
+  time2 = c(LongDat$time, SurvNew$time.s, SurvNew$time.e, NAs.s)^2,
+  baseEffect.l = c(LongDat$be.L, SurvNew$baseEffect, SurvNew$baseEffect, NAs.s),
+  id.inte = c(idx.inte, idx.inte.c, idx.inte.c, NAs.s), # rd intercept (coeffi)
+  id.slope = c(idx.slope, idx.slope.c, idx.slope.c, NAs.s), # rd slope (coeffi)
+  
+  rd.inte.l = c(Ones.l, Ones.s, Ones.s, NAs.s), # covariate
+  rd.time.l = c(LongDat$time, SurvNew$time.s, SurvNew$time.e, NAs.s),
+  
+  # copied terms
+  id.cv.start = c(NAs.l, SurvNew$pt.id, NAs.s, NAs.s), #cv for each patient at s
+  w.start = c(NAs.l, SurvNew$baseline.hazard.length, NAs.s, NAs.s),
+  
+  id.cv.end = c(NAs.l, NAs.s, SurvNew$pt.id, NAs.s), #cv for each patient at e
+  w.end = c(NAs.l, NAs.s, -SurvNew$baseline.hazard.length, NAs.s)
+)
+
+expectation <- list(expect = c(NAs.l, NAs.s, NAs.s, SurvNew$E..coxph)) # expect
+
+joint.data  <- c(covariate.s, covariate.l, expectation, Surv.info$data.list)
+joint.data$Y <- Y.joint # save all information in joint.data
+
+
+#############
+### prior ###
+#############
+
+fixed.prior <- list(expand.factor.strategy="inla",
+                    mean = 0, prec = 0.0001, # prior for fixed effects
+                    mean.intercept = 0, prec.intercept = 0.0001)
+associ.prior <- list(beta = list(fixed = FALSE, param = c(0, 0.0001),
+                                 initial=0.1)) # prior for association
+basehaz.prior <- list(prec = list(hyperid = 54001, 
+                                  name = "log precision", short.name = "prec",
+                                  initial = 3, fixed = FALSE, 
+                                  prior = "pc.prec", param = c(0.5, 0.01), 
+                                  to.theta = function(x) log(x), 
+                                  from.theta = function(x) exp(x)))
+
+k = 2 # prior for random effects (iidkd, k=2)
+rd.prior <- list(theta1 = list(param = c(4, rep(1, k), rep(0, (k*k-k)/2))))
+
+
+#############
+### Model ###
+#############
+
+jm.fit <- inla(Y ~ -1 +
+                 # Longitudinal submodel
+                 intercept.l + time + time2 + baseEffect.l +
+                 (time + time2) : baseEffect.l +
+                 f(id.inte, rd.inte.l, model='iid2d', n=2*n.patients,
+                   constr = F, hyper=rd.prior) +
+                 f(id.slope, rd.time.l, copy='id.inte') +
+                 
+                 # persudo submodel 1: start
+                 f(id.cv.start, w.start, model = "iid", # infinite percison
+                   hyper = list(prec = list(initial = -7, fixed = TRUE)),
+                   constr = F) +
+                 
+                 # persudo submodel 2: end
+                 f(id.cv.end, w.end, model = "iid", # infinite percison
+                   hyper = list(prec = list(initial = -7, fixed = TRUE)),
+                   constr = F) +
+                 
+                 #Survival submodel
+                 intercept.s + trt +
+                 f(basehaz, 
+                   model = "rw1", values = baseline.hazard.values, 
+                   hyper = basehaz.prior, constr = FALSE, 
+                   diagonal = 0.01, scale.model = TRUE) +
+                 
+                 # copied terms
+                 f(cv.start, copy = "id.cv.start", 
+                   hyper = associ.prior, initial = 0.1) +
+                 f(cv.end, copy = "id.cv.end", same.as='cv.start'),
+               
+               data = joint.data, 
+               family = c("gaussian", "gaussian", "gaussian", "poisson"),
+               E = joint.data$expect,
+               control.compute = list(dic = FALSE,
+                                      waic = FALSE,
+                                      cpo = FALSE,
+                                      config = FALSE,
+                                      control.gcpo = list(enable = FALSE,
+                                                          num.level.sets = -1,
+                                                          correct.hyperpar = TRUE)),
+               control.fixed = fixed.prior,
+               control.family = list(list(),
+                                     list(hyper = list(prec = list(initial = 6, fixed=TRUE))),
+                                     list(hyper = list(prec = list(initial = 6, fixed=TRUE))),
+                                     list()),
+               safe=TRUE,
+               control.inla = list(int.strategy = "ccd"))
+
+##########
+### JM ###
+##########
+
+lmeFit <- lme(Y ~ time + I(time^2) + be.L + (time + I(time^2)) : be.L,
+              random = ~ time | id, data = LongDat, 
+              control = lmeControl(opt = "optim"))
+survFit <- coxph(Surv(endpt, event) ~ trt, data = SurvDat, x = TRUE)
+
+fForm <- list('Y' =~ slope(Y))
+
+JMP <- jm(survFit, lmeFit, time_var = 'time', functional_forms = fForm,
+          seed=2023)
+
