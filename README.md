@@ -1,8 +1,6 @@
 # MSc Thesis
 
-<a>
-  <img src="History/UL-logo-color.jpg" alt="Example Image" height: 2>
-</a>
+ <a href='https://github.com/lct19/MSc-Thesis/blob/main/History/UL-logo-color.jpg'><img src='History/UL-logo-color.jpg' align="right" height="139" /></a>
 
 Here one can find the R-code used within the context of the thesis 'Bayesian joint models for longitudinal and time-to-event data: Implementation using INLA and its application in cardiovascular event modeling.'
 
