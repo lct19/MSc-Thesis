@@ -1,6 +1,6 @@
 # MSc Thesis
 
-<a style="position: relative">
+<a>
   <img src="History/UL-logo-color.jpg" alt="Example Image" height: 2>
 </a>
 
