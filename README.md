@@ -1,7 +1,7 @@
 # MSc Thesis
 
 <a style="position: relative">
-  <img src="History/UL-logo-color.jpg" alt="Example Image" height: 120>
+  <img src="History/UL-logo-color.jpg" alt="Example Image" height: 2>
 </a>
 
 Here one can find the R-code used within the context of the thesis 'Bayesian joint models for longitudinal and time-to-event data: Implementation using INLA and its application in cardiovascular event modeling.'
