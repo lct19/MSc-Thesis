@@ -1,5 +1,9 @@
 # MSc Thesis
 
+<div style="position: relative; float: right; width: 25%;">
+  <img src="History/UL-logo-color.jpg" alt="Example Image" style="max-width: 100%; height: auto;">
+</div>
+
 <p align="topright">
   <img src="History/UL-logo-color.jpg" alt="UL-logo-color">
 </p>
