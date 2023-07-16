@@ -1,0 +1,247 @@
+---
+title: "ARgrade(JM1)"
+author:
+  - "Name: Chentao Liu"
+  - "Student number: s3083853"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 3
+    highlight: tango
+    fig_width: 6.5
+    fig_height: 4.5
+    df_print: kable
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+## R packages
+
+```{r}
+library(tidyverse) # data manipulate
+library(lattice) # spaghetti plot
+
+library(lme4) # GLMM
+library(INLA)
+set.seed(2023)
+```
+
+## load the data
+
+```{r}
+load(file = "Data/Surv.RData")
+load(file = "Data/Longi.RData")
+```
+
+
+## JM
+
+```{r}
+# convert surv response to poisson
+y.surv <- inla.surv(Surv$time, Surv$event)
+#A=range(Surv$time)
+#tem <- sort(unique(inla.group(Surv$time), 120))
+#ctpoint <- c(A[1], tem, A[2])
+cox_m = inla.coxph(y.surv ~ -1 + time, 
+                   data=list(y.surv=y.surv, 
+                             gender=Surv$gender,
+                             age=Surv$age, # 
+                             BMI=Surv$BMI, #
+                             COPD=Surv$COPD, #
+                             EXAR=Surv$EXAR, # NAs
+                             preSur=Surv$preSur,
+                             LVF=Surv$LVF, # NAs
+                             hypertension=Surv$hypertension,
+                             NYHA=Surv$NYHA,
+                             id=Surv$id,
+                             time.s=Surv$time,
+                             time.e=Surv$time),
+                   control.hazard = list(model='rw1',
+                                         diagonal=1e-2,
+                                         constr=FALSE,
+                                         hyper=list(prec=list(prior='pc.prec',
+                                                              param=c(0.5,0.01),
+                                                              initial=3)),
+                                         scale.model=TRUE,
+                                         #tag=as.character(m),
+                                         n.intervals=24))
+                                         #cutpoints=ctpoint))
+Surv.n <- cox_m$data
+
+# mid-points of time interval in surv part
+Surv.n$time <- Surv.n$baseline.hazard.time + 0.5*Surv.n$baseline.hazard.length
+
+Surv.n$len <- Surv.n$baseline.hazard.length
+
+# unique id for each patients' time points (surv)
+Surv.n$id.time <- 1:nrow(Surv.n)
+```
+
+```{r}
+# Number of observations in each dataset
+n.s <- nrow(Surv.n)
+n.l <- nrow(Longi)
+# Vector of NA's
+NAs.l <- rep(NA, n.l)
+NAs.s <- rep(NA, n.s)
+# vector of 1's
+Ones.l <- rep(1, n.l)
+Ones.s <- rep(1, n.s)
+```
+
+```{r}
+# new response for joint model
+Y.long <- c(Longi$AR.indicator, NAs.s, NAs.s)
+# to copy linear predictors for each patients in each time-points (surv)
+Y.cv <- c(NAs.l, rep(0, n.s), NAs.s) # current value
+Y.surv <- c(NAs.l, NAs.s, Surv.n$y..coxph)
+
+Y.joint <- list(Y.long, Y.cv, Y.surv)
+```
+
+```{r}
+# create patients id to copy random effects
+unique.id <- unique(Surv.n$id)
+n.id <- length(unique.id)
+
+#Unique indices for long. and survival data
+idx.inte <- match(Longi$id, unique.id)
+idx.slope <- idx.inte + n.id
+
+idx.inte.c <- match(Surv.n$id, unique.id)
+idx.slope.c <- idx.inte.c + n.id
+```
+
+
+```{r}
+# co-variates
+# Survival part
+covariate.s <- data.frame(
+  intercept.s = c(NAs.l, NAs.s, Ones.s),
+  gender.s = c(NAs.l, NAs.s, Surv.n$gender),
+  age.s = c(NAs.l, NAs.s, Surv.n$age),
+  COPD.s = c(NAs.l, NAs.s, Surv.n$COPD),
+  EXAR.s = c(NAs.l, NAs.s, Surv.n$EXAR),
+  preSur.s = c(NAs.l, NAs.s, Surv.n$preSur),
+  LVF.s = c(NAs.l, NAs.s, Surv.n$LVF),
+  # RMI.s = c(NAs.l, NAs.s, Surv.n$RMI),
+  hypertension.s = c(NAs.l, NAs.s, Surv.n$hypertension),
+  NYHA.s = c(NAs.l, NAs.s, Surv.n$NYHA),
+  #rnl.dia.s = c(NAs.l, NAs.s, Surv.n$rnl.dia),
+  #URGOP.s = c(NAs.l, NAs.s, NAs.s, NAs.s, Surv.n$URGOP),
+
+  # unique id to copy cv/cs in each time point for each patients 
+  current.value = c(NAs.l, NAs.s, Surv.n$id.time),
+  
+  basehaz = c(NAs.l, NAs.s, Surv.n$baseline.hazard)
+)
+```
+
+```{r}
+# Longitudinal part (and copied terms)
+covariate.l <- data.frame(
+  intercept.l = c(Ones.l, Ones.s, NAs.s),
+  
+  # Longi part to fit beta.time
+  # then calculate beta.time x time.surv in copy terms.
+  time = c(Longi$time_so, Surv.n$time, NAs.s),
+  #age = c(Longi$age, Surv.n$age, NAs.s),
+  #BMI = c(Longi$BMI, Surv.n$BMI, NAs.s),
+  #rnl.creat = c(Longi$rnl.creat, Surv.n$rnl.creat, NAs.s),
+  
+  # patients' id to match random effects 
+  id.rd.inte = c(idx.inte, idx.inte.c, NAs.s),
+  id.rd.slope = c(idx.slope, idx.slope.c, NAs.s),
+  
+  rd.intercept.l = c(Ones.l, Ones.s, NAs.s),
+  # same as time
+  rd.time.l = c(Longi$time_so, Surv.n$time, NAs.s),
+  
+  # copied terms
+  id.cv = c(NAs.l, Surv.n$id.time, NAs.s),
+  w.cv = c(NAs.l, rep(-1, n.s), NAs.s)
+)
+
+e.p <- list(e.parameter = c(NAs.l, NAs.s, Surv.n$E..coxph))
+```
+
+
+```{r}
+joint.data  <- c(covariate.s, covariate.l, e.p, cox_m$data.list)
+joint.data$Y <- Y.joint
+```
+
+
+### Prior
+
+```{r}
+# prior information
+fixed.prior <- list(expand.factor.strategy="inla",
+                    mean = 0, prec = 0.0001,
+                    mean.intercept = 0, prec.intercept = 0.0001)
+
+basehaz.prior <- list(prec = list(hyperid = 54001, name = "log precision",
+                                  short.name = "prec", initial = 3, 
+                                  fixed = FALSE, prior = "pc.prec", 
+                                  param = c(0.5, 0.01), 
+                                  to.theta = function(x) log(x), 
+                                  from.theta = function(x) exp(x)))
+
+associ.prior.v <- list(beta = list(fixed = FALSE, param = c(0, 0.0001), initial=0.1))
+associ.prior.s <- list(beta = list(fixed = FALSE, param = c(0, 0.0001), initial=0.1))
+
+k = 2
+rd.prior <- list(theta1 = list(param = c(4, rep(1, k), rep(0, (k*k-k)/2))))
+```
+
+### Model
+
+```{r}
+jm.inla <- inla.hyperpar(inla(Y ~ -1 +
+      #Longitudinal submodel
+      intercept.l + time +
+      f(id.rd.inte, rd.intercept.l, model='iid2d', n=2*n.id,
+        hyper=rd.prior) +
+      f(id.rd.slope, rd.time.l, copy='id.rd.inte') +
+        
+      # Copy linear predictors for each time in surv
+      f(id.cv, w.cv, model = "iid", 
+        hyper = list(prec = list(initial = -6, fixed = TRUE))) +
+        
+      #Survival submodel
+      intercept.s +
+      f(basehaz, 
+        model = "rw1", values = baseline.hazard.values, 
+        hyper = basehaz.prior,
+        diagonal = 0.01, scale.model = TRUE) +
+        
+      # copied terms
+      f(current.value, copy = "id.cv", hyper = associ.prior.v, initial = 0.1),
+      
+      data = joint.data, 
+      family = c("binomial", "gaussian", "poisson"),
+      control.predictor = list(compute=T),
+      E = joint.data$e.parameter,
+      control.compute = list(dic = TRUE,
+                             waic = TRUE,
+                             config = TRUE),
+      control.fixed = fixed.prior,
+      control.inla=list(int.strategy="auto"),
+      control.family = list(list(),
+                            list(hyper = list(prec = list(initial = 10, fixed=TRUE))),
+                            list())
+))
+```
+
+```{r}
+save(jm.inla, file='dar_cv.Rdata')
+```
+
+
+```{r}
+summary(jm.inla)
+```
+

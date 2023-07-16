@@ -1,0 +1,253 @@
+---
+title: "Spaghetti-plot"
+author:
+  - "Name: Chentao Liu"
+  - "Student number: s3083853"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 3
+    highlight: tango
+    fig_width: 6.5
+    fig_height: 4.5
+    df_print: kable
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+## R packages
+
+```{r}
+library(tidyverse) # data manipulate
+library(lattice) # spaghetti plot
+
+library(nlme)
+set.seed(2023)
+```
+
+## Preprocessing
+
+```{r, eval=FALSE}
+load(file = "Data/data_long.RData")
+load(file = "Data/data_wide.RData")
+
+###################################
+######## drops more than 2 ########
+###################################
+drops <- data_long %>%
+  group_by(SUBJECT_ID) %>% # drops more than 2
+  filter(any(diff(DAR.l) < -2)) %>% # (compare to the last time)
+  select(SUBJECT_ID, time_so, DAR.l)
+drops_id <- unique(drops$SUBJECT_ID)
+
+for (id in drops_id){
+  # we found the last measurements of these patients drops
+  # delete these measurements
+  ind_del <- which(data_long$SUBJECT_ID == id)
+  data_long <- data_long[-tail(ind_del, 1), ]
+}
+
+
+#####################################
+######## New binary response ########
+#####################################
+data_long$AR.indicator = ifelse(data_long$DAR.l >= 2, 1, 0)
+
+
+######################################
+######## repeated measurement ########
+######################################
+repeated <- data_long %>%
+  group_by(SUBJECT_ID) %>%
+  filter(sum(!is.na(AVGrad.l)) >= 2 & sum(!is.na(DAR.l)) >= 2)
+patients_id <- repeated$SUBJECT_ID
+
+Surv <- data_wide %>% filter(SUBJECT_ID %in% patients_id)
+Surv$id <- 1:nrow(Surv)
+Longi <- data_long %>%
+  filter(SUBJECT_ID %in% patients_id) %>%
+  left_join(Surv %>% select(id, SUBJECT_ID), by = "SUBJECT_ID")
+
+
+##################################
+######## save the dataset ########
+##################################
+save(Surv, file="Data/Surv.RData")
+save(Longi, file="Data/Longi.RData")
+```
+
+## Examing data
+
+```{r}
+load(file = "Data/Surv.RData")
+load(file = "Data/Longi.RData")
+```
+
+```{r}
+# Kaplan Meier estimator
+surv_obj <- Surv(time = Surv$time, event = Surv$event) 
+km_fit <- survfit(surv_obj ~ 1)
+km_plot <- ggsurvplot(km_fit, data=Surv,
+                      pval = TRUE, conf.int = TRUE,
+                      risk.table = TRUE, # Add risk table
+                      surv.median.line = "hv", # Specify median survival
+                      ggtheme = theme_bw(), # Change ggplot2 theme
+                      palette = c("#2E9FDF"))
+print(km_plot)
+pdf("survplot.pdf")
+print(km_plot, newpage = FALSE)
+dev.off()
+```
+
+```{r}
+res <- Longi %>% group_by(id) %>%
+  count()
+summary(res)
+
+gradient <- Longi %>% group_by(id) %>%
+  filter(!is.na(AVGrad.l)) %>% 
+  count()
+summary(gradient)
+mean(gradient$n)
+sd(gradient$n)
+
+grades <- Longi %>% group_by(id) %>%
+  filter(!is.na(DAR.l)) %>% 
+  count()
+summary(grades)
+mean(grades$n)
+sd(grades$n)
+```
+
+
+```{r}
+# function to sample 30 patients
+s.status.index = function(num=10){
+  censoring = which(Surv$status == 0)
+  reoperation = which(Surv$status == 1)
+  death = which(Surv$status == 2)
+  i = c(sample(censoring, size=num),
+        sample(reoperation, size=num),
+        sample(death, size=num))
+  output = which(Longi$SUBJECT_ID %in% Surv$SUBJECT_ID[i])
+  return(output)
+}
+status.sample = s.status.index(10)
+```
+
+
+## AV gradient
+
+According to spaghetti plots of 2 biomarkers (AV gradient, Degree of AR), Most patients experienced events (operation/death) have a higher value in these two biomarkers.
+
+### Plots
+
+```{r}
+# all, outcome
+p3 <- ggplot(data = Longi, aes(x = time_so, y = AVGrad.l, group = id))+
+    geom_line() + 
+    stat_smooth(aes(group = 1), method = "loess", formula = y ~ x, se = FALSE) + 
+    facet_grid(. ~ factor(status,c(0, 1, 2),c('censoring','reoperation', 'death'))) +
+    xlab('Time') + 
+    ylab('Gradient')
+```
+
+```{r}
+# all, gender
+p4 <- ggplot(data = Longi, aes(x = round(time_so, 1), y = AVGrad.l, group = id))
+p4 + geom_line() + 
+  stat_smooth(aes(group = 1), method = "loess", formula = y ~ x, se = FALSE) + 
+  facet_grid(. ~ factor(gender,c(0,1),c('male','female')))
+```
+
+### Individual
+
+```{r}
+p_i1 <- Longi[status.sample, ] %>%
+  ggplot(aes(x = time_so, y = AVGrad.l)) +
+  geom_point() +
+  stat_smooth(aes(group = 1), method = "loess", formula = y ~ x, se = FALSE) +
+  coord_cartesian(ylim = c(0,60)) +
+  theme(panel.grid = element_blank()) +
+  facet_wrap(~id) +
+  xlab('Time') + ylab('Gradient')
+  
+p_i1
+```
+
+```{r}
+ggsave('Gradient.png', plot=p3, width = 12, height = 7)
+ggsave('Gradient_i.png', plot=p_i1, width = 8, height = 7)
+```
+
+
+## Degree of AR
+
+### plots
+
+```{r}
+# all, outcome
+p6 <- ggplot(data = Longi, aes(x = time_so, y = DAR.l, group = id)) + 
+  geom_line() + 
+  stat_smooth(aes(group = 1), method = "loess", formula = y ~ x, se = FALSE) + 
+  facet_grid(. ~ factor(status,c(0, 1, 2),c('censoring','reoperation', 'death'))) +
+  xlab('Time') + ylab('AR Grade')
+```
+
+
+### Individual
+
+```{r}
+p7 <- Longi[status.sample, ] %>%
+  ggplot(aes(x = time_so, y = DAR.l)) +
+  geom_point() +
+  stat_smooth(aes(group = 1), method = "lm", formula = y ~ x, se = FALSE) +
+  coord_cartesian(ylim = c(0,4)) +
+  theme(panel.grid = element_blank()) +
+  facet_wrap(~id) +
+  xlab('Time') + ylab('AR Grade')
+```
+
+```{r}
+ggsave('ARgrade.png', plot=p6, width = 12, height = 7)
+ggsave('ARgrade_i.png', plot=p7, width = 8, height = 7)
+```
+
+
+
+## Degree of AR (Binary)
+
+### Plots
+
+```{r}
+# all, gender
+p8 <- ggplot(data = Longi, aes(x = time_so, y = AR.indicator, group = id))+
+  geom_line() + 
+  stat_smooth(aes(group = 1), method = "loess", formula = y ~ x, se = FALSE) + 
+  facet_grid(. ~ factor(status,c(0, 1, 2),c('censoring','reoperation', 'death'))) +
+  xlab('Time') + ylab('AR Grade (binary)')
+```
+
+
+### Individual
+
+```{r}
+p9 <- Longi[status.sample, ] %>%
+  ggplot(aes(x = time_so, y = AR.indicator)) +
+  geom_point() +
+  stat_smooth(aes(group = 1), method = "lm", formula = y ~ x, se = FALSE) +
+  coord_cartesian(ylim = c(0,1)) +
+  theme(panel.grid = element_blank()) +
+  facet_wrap(~id) +
+  xlab('Time') + ylab('AR Grade (binary)')
+```
+
+```{r}
+
+ggsave('ARgrade_b.png', plot=p8, width = 12, height = 7)
+ggsave('ARgrade_bi.png', plot=p9, width = 8, height = 7)
+```
+
